@@ -2390,6 +2390,8 @@ const Explorer = (function () {
     const f = maxClose > 0 ? c / maxClose : 0; return { color: f < 0.34 ? '#C92A2A' : f < 0.67 ? '#F08C00' : '#E8B84A', width: 3 };
   }
   const placeColor = score => SCORE_COLORS[levelOf(score)];
+  // With no role filter, wide zoom shows only places that have a role.
+  const placeShown = (place, role, closeZoom) => role === 'all' ? (closeZoom || place.role !== 'other') : place.role === role;
 
   // ---- Retrace: a run record that can be replayed, and a checksum of the outcome ----
   function checksum(R) {
@@ -2437,7 +2439,7 @@ const Explorer = (function () {
     return { type: 'FeatureCollection', note: 'Illustrative scores from an uncalibrated model; join back to Overture with gers_id.', features: feats };
   }
 
-  return { prepare, makeCtx, evaluate, describe, analyze, inView, pick, route, agentEvents, edgeMetrics, roadStyle, buildingColor, placeColor, roleOf,
+  return { prepare, makeCtx, evaluate, describe, analyze, inView, pick, route, agentEvents, edgeMetrics, roadStyle, buildingColor, placeColor, placeShown, roleOf,
     checksum, fingerprint, makeRecord, parseRecord, verifyRecord, toGeoJSON, LEVELS, ROLE_LABEL, ROLE_GLYPH, BUILDING_MODES, ROAD_MODES, ST_NAMES, tm };
 })();
 if (typeof module !== 'undefined') module.exports = Explorer;
@@ -3043,7 +3045,7 @@ function exDraw(){
     }
   }
   if (ex.places){
-    const big=cellPx>=3, r=big?8:3.5, iv=EX.inView(cat,bb.x0,bb.y0,bb.x1,bb.y1).places.filter(i=>ex.role==='all' ? (big||cat.places[i].role!=='other') : cat.places[i].role===ex.role);
+    const big=cellPx>=3, r=big?8:3.5, iv=EX.inView(cat,bb.x0,bb.y0,bb.x1,bb.y1).places.filter(i=>EX.placeShown(cat.places[i], ex.role, big));
     xc.font='600 11px "IBM Plex Sans",system-ui,sans-serif'; xc.textAlign='center'; xc.textBaseline='middle';
     for (const i of iv){
       const p=cat.places[i], q=px(p.gx,p.gy);
