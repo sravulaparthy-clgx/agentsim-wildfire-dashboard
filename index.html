@@ -1022,10 +1022,6 @@ const RealWorld = (function () {
       toLatLng: (gx, gy) => [bbox.n - gy * dLat, bbox.w + gx * dLon] };
   }
 
-  function overpassQuery(b) {
-    return `[out:json][timeout:120];way["highway"~"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street)$"](${b.s},${b.w},${b.n},${b.e});(._;>;);out body;`;
-  }
-
   // Terrarium elevation tiles
   const lon2tile = (lon, z) => (lon + 180) / 360 * 2 ** z;
   const lat2tile = (lat, z) => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z; };
@@ -1350,15 +1346,6 @@ const RealWorld = (function () {
     return { errors, warnings };
   }
 
-  // Parse an OSM export: Overpass JSON, OSM XML, or GeoJSON (e.g. from overpass-turbo)
-  function parseOsm(text) {
-    const t = text.trim();
-    if (t[0] === '<') return fromXml(t);
-    const j = JSON.parse(t);
-    if (Array.isArray(j.elements)) return j;
-    if (j.type === 'FeatureCollection') return fromGeoJson(j);
-    throw new Error('the file is not Overpass JSON, OSM XML or GeoJSON');
-  }
   function fromXml(t) {
     const doc = new DOMParser().parseFromString(t, 'application/xml');
     if (doc.querySelector('parsererror')) throw new Error('the XML file could not be read');
@@ -1368,16 +1355,6 @@ const RealWorld = (function () {
       const nodes = Array.from(w.getElementsByTagName('nd')).map(nd => +nd.getAttribute('ref')), tags = {};
       for (const tg of w.getElementsByTagName('tag')) tags[tg.getAttribute('k')] = tg.getAttribute('v');
       els.push({ type: 'way', id: +w.getAttribute('id'), nodes, tags });
-    }
-    return { elements: els };
-  }
-  function fromGeoJson(g) {
-    const ids = new Map(), els = []; let next = 1;
-    const nid = (lon, lat) => { const k = lon.toFixed(7) + ',' + lat.toFixed(7); let id = ids.get(k); if (!id) { id = next++; ids.set(k, id); els.push({ type: 'node', id, lat, lon }); } return id; };
-    for (const f of g.features || []) {
-      const p = f.properties || {}, tags = p.tags || p; if (!f.geometry || !tags.highway) continue;
-      const lines = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [];
-      for (const line of lines) els.push({ type: 'way', id: next++, nodes: line.map(([lon, lat]) => nid(lon, lat)), tags });
     }
     return { elements: els };
   }
@@ -1548,7 +1525,7 @@ const RealWorld = (function () {
     return { bbox: b, trimmed };
   }
 
-  return { finestLod, rasterize, parseFeatures, kindOf, fromOverture, buildingsFromOverture, extentOf, studyBox, parseOsm, makeGrid, overpassQuery, terrariumTiles, makeElevSampler, build, qualityReport, LU };
+  return { finestLod, rasterize, parseFeatures, kindOf, fromOverture, buildingsFromOverture, extentOf, studyBox, makeGrid, terrariumTiles, makeElevSampler, build, qualityReport, LU };
 })();
 if (typeof module !== 'undefined') module.exports = RealWorld;
 
@@ -2306,15 +2283,15 @@ const Explorer = (function () {
   // Score every building and place once; rank the top ones and count levels
   function analyze(cat, ctx, top) {
     top = top || 10;
-    const run = (items) => {
+    const roles = {};
+    const run = (items, each) => {
       const levels = [0, 0, 0, 0], best = [];
-      items.forEach((it, i) => { const s = evaluate(cat, it, ctx, false); levels[levelOf(s)]++; if (s > 0) best.push([s, i]); });
+      items.forEach((it, i) => { const s = evaluate(cat, it, ctx, false); levels[levelOf(s)]++; if (s > 0) best.push([s, i]); if (each) each(it, s); });
       best.sort((a, b) => b[0] - a[0] || a[1] - b[1]);
       return { levels, top: best.slice(0, top).map(([score, idx]) => ({ idx, score })) };
     };
-    const roles = {};
-    for (const p of cat.places) { const s = evaluate(cat, p, ctx, false), r = roles[p.role] || (roles[p.role] = { n: 0, high: 0 }); r.n++; if (s >= 50) r.high++; }
-    return { buildings: run(cat.buildings), places: run(cat.places), roles };
+    const places = run(cat.places, (p, s) => { const r = roles[p.role] || (roles[p.role] = { n: 0, high: 0 }); r.n++; if (s >= 50) r.high++; });
+    return { buildings: run(cat.buildings), places, roles };
   }
 
   // Which features lie in a grid-space window
@@ -2389,7 +2366,6 @@ const Explorer = (function () {
     const c = ctx.R.eclosedAt[eid]; if (c < 0 || c > ctx.t) return { color: '#C5CED3', width: 1.2 };
     const f = maxClose > 0 ? c / maxClose : 0; return { color: f < 0.34 ? '#C92A2A' : f < 0.67 ? '#F08C00' : '#E8B84A', width: 3 };
   }
-  const placeColor = score => SCORE_COLORS[levelOf(score)];
   // With no role filter, wide zoom shows only places that have a role.
   const placeShown = (place, role, closeZoom) => role === 'all' ? (closeZoom || place.role !== 'other') : place.role === role;
 
@@ -2439,8 +2415,8 @@ const Explorer = (function () {
     return { type: 'FeatureCollection', note: 'Illustrative scores from an uncalibrated model; join back to Overture with gers_id.', features: feats };
   }
 
-  return { prepare, makeCtx, evaluate, describe, analyze, inView, pick, route, agentEvents, edgeMetrics, roadStyle, buildingColor, placeColor, placeShown, roleOf,
-    checksum, fingerprint, makeRecord, parseRecord, verifyRecord, toGeoJSON, LEVELS, ROLE_LABEL, ROLE_GLYPH, BUILDING_MODES, ROAD_MODES, ST_NAMES, tm };
+  return { prepare, makeCtx, evaluate, describe, analyze, inView, pick, route, edgeMetrics, roadStyle, buildingColor, placeShown, roleOf, levelOf,
+    checksum, fingerprint, makeRecord, parseRecord, verifyRecord, toGeoJSON, LEVELS, ROLE_LABEL, ROLE_GLYPH, BUILDING_MODES, ROAD_MODES, tm };
 })();
 if (typeof module !== 'undefined') module.exports = Explorer;
 
@@ -3033,9 +3009,9 @@ function exDraw(){
     xc.setLineDash([]);
   }
   if (ex.buildings){
-    const iv=EX.inView(cat,bb.x0,bb.y0,bb.x1,bb.y1).buildings, poly=cellPx>=5 && iv.length<=30000, dot=Math.max(1.4,Math.min(3,cellPx*0.5));
+    const needScore=ex.bMode==='score'||ex.min>0, iv=EX.inView(cat,bb.x0,bb.y0,bb.x1,bb.y1).buildings, poly=cellPx>=5 && iv.length<=30000, dot=Math.max(1.4,Math.min(3,cellPx*0.5));
     for (const i of iv){
-      const b=cat.buildings[i], s=EX.evaluate(cat,b,c,false); if (s<ex.min) continue;
+      const b=cat.buildings[i], s=needScore ? EX.evaluate(cat,b,c,false) : 0; if (s<ex.min) continue;
       xc.fillStyle=EX.buildingColor(cat,ex.bMode,b,c,s);
       if (poly){
         xc.beginPath(); for (let k=0;k<b.ring.length;k+=2){ const q=px(b.ring[k],b.ring[k+1]); k?xc.lineTo(q[0],q[1]):xc.moveTo(q[0],q[1]); }
@@ -3049,7 +3025,7 @@ function exDraw(){
     xc.font='600 11px "IBM Plex Sans",system-ui,sans-serif'; xc.textAlign='center'; xc.textBaseline='middle';
     for (const i of iv){
       const p=cat.places[i], q=px(p.gx,p.gy);
-      xc.fillStyle=EX.placeColor(EX.evaluate(cat,p,c,false)); xc.strokeStyle='#fff'; xc.lineWidth=2;
+      xc.fillStyle=EX.LEVELS[EX.levelOf(EX.evaluate(cat,p,c,false))][2]; xc.strokeStyle='#fff'; xc.lineWidth=2;
       xc.beginPath(); xc.arc(q[0],q[1],r,0,7); xc.stroke(); xc.fill();
       const g=EX.ROLE_GLYPH[p.role]; if (big&&g){ xc.fillStyle='#14222D'; xc.fillText(g,q[0],q[1]+0.5); }
       if (cellPx>=14 && p.name && iv.length<=40){ xc.textAlign='left'; xc.strokeStyle='rgba(255,255,255,.9)'; xc.lineWidth=3; xc.strokeText(p.name,q[0]+r+3,q[1]); xc.fillStyle='#14222D'; xc.fillText(p.name,q[0]+r+3,q[1]); xc.textAlign='center'; }
@@ -3128,7 +3104,7 @@ function exAnalyze(){
     body.replaceChildren(...(items.length?items:[null]).map(it=>{
       const tr=document.createElement('tr');
       if (!it){ const td=el('td','','Nothing scored yet'); td.colSpan=3; tr.append(td); return tr; }
-      const o=list[it.idx], label=o.name||((kind==='building'?o.cls:o.category)||kind).replace(/_/g,' '), lv=EX.LEVELS[Math.min(3,Math.floor(it.score/25))];
+      const o=list[it.idx], label=o.name||((kind==='building'?o.cls:o.category)||kind).replace(/_/g,' '), lv=EX.LEVELS[EX.levelOf(it.score)];
       const sc=el('td','n'), dot=el('span','pill'); dot.style.background=lv[2]; sc.append(dot,`${it.score} ${lv[0]}`);
       tr.className='pick'; tr.append(el('td','',label), el('td','',use(o)), sc); tr.onclick=()=>exShow({kind,idx:it.idx},true); return tr;
     }));
@@ -3143,7 +3119,7 @@ function hoverText(h){
   const ctx=exCtx();
   if (h.kind==='road'){ const e=world.edges[h.idx]; return `Road: ${e.name}, ${EX.edgeMetrics(cat,h.idx,ctx).state.toLowerCase()}. Click for details`; }
   const it=(h.kind==='building'?cat.buildings:cat.places)[h.idx], s=EX.evaluate(cat,it,ctx,false);
-  return `${h.kind==='building'?'Building':'Place'}${it.name?' '+it.name:''}: wildfire score ${s} (${EX.LEVELS[Math.min(3,Math.floor(s/25))][0]}). Click for details`;
+  return `${h.kind==='building'?'Building':'Place'}${it.name?' '+it.name:''}: wildfire score ${s} (${EX.LEVELS[EX.levelOf(s)][0]}). Click for details`;
 }
 map.on('mousemove', ev=>{
   if (!cat || !ex.on || !ex.inspect || !R) return;
